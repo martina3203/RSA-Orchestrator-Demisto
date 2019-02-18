@@ -8,7 +8,10 @@
 
 
 import os
-import datetime
+import glob
+from datetime import date
+from datetime import datetime
+from datetime import timedelta
 import argparse
 import logging
 
@@ -28,15 +31,19 @@ parser.add_argument('-p','--password',help='This will be the password of the use
 parser.add_argument('-d','-D','--debug',help='This allows for the viewing of debug logs.',default=False,action="store_true")
 parser.add_argument('--RetentionPolicy',help='This will determine the criteria we evaluate whether to move files or not. \
 The options are: "date" or "spaceusage"')
-parser.add_argument('--DaysOfRetention',help='If the RetentionPolicy is set to "date", \
+parser.add_argument('--MonthsOfRetention',help='If the RetentionPolicy is set to "date", \
     then we shall use this value to determine how long back our database should be. \
-    If it exceeds this value, it will be archived/deleted.')
+    If it exceeds this value, it will be archived/deleted.',type=int,default=100)
 parser.add_argument('--MaxFSpercentage',help='If the Retention Policy is set to "spaceusage", \
     then we shall use this value to determine what the maximum file usage percentage should be. \
     If it exceeds this value, it will be archived/deleted.')
 
 args = parser.parse_args()
 DEBUG = args.debug
+retentionpolicy = args.RetentionPolicy
+retentionmonths = args.MonthsOfRetention
+databaseDirectory = "/var/lib/rsa-orchestrator/data"
+
 #Configure logging
 if DEBUG == False:
     logging.basicConfig(format='%(asctime)s DatabaseMaintenance.py %(levelname)s: %(message)s',level=logging.INFO)
@@ -76,11 +83,56 @@ def stopService():
 
 #We will use this function to determine if the criteria is met for the files.
 def checkCriteria():
-    return True
 
-#Files at the time of this code write had a format of base-filename_MMYYYY.db or simply folder_MMYYYY
-def locateFiles():
-    return
+    filesMarked = []
+
+    if (retentionpolicy == "date"):
+        logging.debug("Starting date branch of checking Criteria")
+        #Now we shall check to see if we have files older than X.
+
+        #Take today's date and get the oldest date we want to get with retention period
+        today = datetime.today()
+        #Convert months to days to create a time delta. We are simply going with a month is 30 days
+        daysretention = retentionmonths * 30
+        delta = timedelta(days=daysretention)
+        retentionDate = today - delta
+
+        logging.debug("Today's date in MMYYYY format is " + today.strftime('%m%Y'))
+        logging.info("Target Retention Date is " + retentionDate.strftime('%m-%d-%Y') + ". Files older than this will be moved/deleted.")
+
+        #Checking file system for files that contain that date.
+        partitionsDirectory = databaseDirectory + "/rsa-orchestratoridx/"
+
+        #This is the list of index files we will search for for backup
+        indexCategories = {"evidences","newInsights","incidents","entries","investigations"}
+        for indexCategory in indexCategories:
+            globpath = partitionsDirectory + indexCategory + "_*"
+            indexDirOutput = glob.glob(globpath)
+            for file in indexDirOutput:
+                logging.debug("Found " + file)
+                baseFilename = file.replace(partitionsDirectory,'')
+                fileDateSuffix = file.replace(partitionsDirectory + indexCategory + "_",'')
+                logging.debug("Base Filename: " + baseFilename + " with date suffix of " + fileDateSuffix)
+
+                #We will now compare the dates to see if they need to be rolled overself.
+                try:
+                    folderDate = datetime.strptime(fileDateSuffix,"%m%Y")
+                    logging.debug("Converted time is " + folderDate.strftime('%m%Y'))
+                except ValueError:
+                    logging.error("Unable to convert suffix of filename to valid name. Aborting! File:" + file)
+                    exit()
+                except:
+                    logging.error("Unknown error occurred while parsing for date suffix of file. Aborting! File:" + file)
+                    exit()
+
+                if (folderDate < retentionDate):
+                    logging.info("Marking " + file + " for archival/deletion")
+                    filesMarked.append(file)
+                else:
+                    logging.debug("File is NOT marked for archival/deletion: " + file)
+    else:
+        return filesMarked
+    return filesMarked
 
 def copyFiles():
     return
@@ -90,9 +142,10 @@ def removeFiles():
 
 #MAIN
 logging.info("Starting script.")
-if (checkCriteria()):
-    stopService()
-    startService()
+#If there are no elements marked for deletion
+if not checkCriteria():
+    #stopService()
+    #startService()
     logging.info("Script Finished.")
 else:
     logging.info("Criteria is not met for Database Rotation. Exitting.")
